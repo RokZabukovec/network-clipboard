@@ -3,9 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"github.com/gen2brain/beeep"
-	"github.com/grandcat/zeroconf"
-	"golang.design/x/clipboard"
 	"log"
 	"net"
 	"os"
@@ -13,6 +10,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/gen2brain/beeep"
+	"github.com/grandcat/zeroconf"
+	"golang.design/x/clipboard"
 )
 
 const PORT = 12345
@@ -33,7 +34,6 @@ func main() {
 		panic(err)
 	}
 
-	//var clients = make(chan *zeroconf.ServiceEntry, 1)
 	go registerService()
 	var mu sync.Mutex
 	go browseServices(&clients, &mu)
@@ -47,7 +47,7 @@ func main() {
 		}
 	}()
 
-	go listenForUdp()
+	go listenForTcp()
 
 	select {}
 
@@ -122,27 +122,39 @@ func sendData(data []byte) {
 		var client = &clients[i]
 		serverAddr := fmt.Sprintf("%s:%d", client.IP, client.Port)
 
-		resolvedAddr, err := net.ResolveUDPAddr("udp", serverAddr)
+		resolvedAddr, err := net.ResolveTCPAddr("tcp4", serverAddr)
 		if err != nil {
 			fmt.Println("Error resolving address:", err)
 
 			continue
 		}
 
-		conn, err := net.DialUDP("udp", nil, resolvedAddr)
+		conn, err := net.DialTCP("tcp4", nil, resolvedAddr)
 		if err != nil {
 			fmt.Println("Error dialing:", err)
 			continue
 		}
 
-		i, err := conn.WriteToUDP(data, resolvedAddr)
+		_, err = conn.Write(data)
 
-		fmt.Println(i)
 		if err != nil {
-			fmt.Println("Error writing to server:", err)
-			continue
+			println("Write to server failed:", err.Error())
+			os.Exit(1)
 		}
 
+		println("write to server = ", string(data))
+
+		reply := make([]byte, 1024)
+
+		_, err = conn.Read(reply)
+		if err != nil {
+			println("Write to server failed:", err.Error())
+			os.Exit(1)
+		}
+
+		println("reply from server=", string(reply))
+
+		conn.Close()
 	}
 
 }
@@ -219,5 +231,40 @@ func listenForUdp() {
 		if err != nil {
 			log.Printf("Error writing to clipboard: %v", err)
 		}
+	}
+}
+
+func listenForTcp() {
+	addr := "localhost:12345"
+	l, err := net.Listen("tcp4", addr)
+	if err != nil {
+		panic(err)
+	}
+	defer l.Close()
+
+	fmt.Printf("Listening on localhost:12345\n")
+
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			panic(err)
+		}
+
+		go func(conn net.Conn) {
+			buf := make([]byte, 1024)
+			len, err := conn.Read(buf)
+			if err != nil {
+				fmt.Printf("Error reading: %#v\n", err)
+				return
+			}
+			fmt.Printf("Message received: %s\n", string(buf[:len]))
+
+			conn.Write([]byte("Message received.\n"))
+			clipboard.Write(clipboard.FmtText, buf[:len])
+			if err != nil {
+				log.Printf("Error writing to clipboard: %v", err)
+			}
+			conn.Close()
+		}(conn)
 	}
 }
