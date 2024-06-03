@@ -90,7 +90,7 @@ func browseServices(clients *[]Client, mu *sync.Mutex) {
 	}(entries)
 
 	for {
-		err = resolver.Browse(context.TODO(), "_workstation._udp", "local.", entries)
+		err = resolver.Browse(context.TODO(), "_workstation._tcp", "local.", entries)
 		if err != nil {
 			log.Fatalf("Failed to browse: %v", err)
 		}
@@ -121,6 +121,11 @@ func sendData(data []byte) {
 	for i := range clients {
 		var client = &clients[i]
 		serverAddr := fmt.Sprintf("%s:%d", client.IP, client.Port)
+
+		var localIp, _ = getLocalIP()
+		if string(client.IP) == localIp {
+			continue
+		}
 
 		resolvedAddr, err := net.ResolveTCPAddr("tcp4", serverAddr)
 		if err != nil {
