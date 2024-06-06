@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log"
@@ -16,9 +17,11 @@ import (
 	"golang.design/x/clipboard"
 )
 
-const PORT = 12345
+const PORT = 8888
 const ServiceName = "Network clipboard"
 const BufferSize = 1024
+
+var ignoreNextChange bool
 
 type Client struct {
 	IP   net.IP
@@ -26,7 +29,7 @@ type Client struct {
 	Name string
 }
 
-var clients []Client = make([]Client, 0)
+var clients = make([]Client, 0)
 
 func main() {
 	err := clipboard.Init()
@@ -34,39 +37,59 @@ func main() {
 		panic(err)
 	}
 
-	go registerService()
-	var mu sync.Mutex
-	go browseServices(&clients, &mu)
-
-	go func() {
-		ch := clipboard.Watch(context.TODO(), clipboard.FmtText)
-
-		for data := range ch {
-			fmt.Println(string(data))
-			sendData(data)
-		}
-	}()
-
-	go listenForTcp()
-
-	select {}
-
-}
-
-func registerService() {
-	server, err := zeroconf.Register(ServiceName, "_workstation._udp", "local.", PORT, []string{""}, nil)
-	if err != nil {
-		panic(err)
-	}
-	defer server.Shutdown()
-	defer log.Println("Shutting down.")
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
-	<-sig
+	go func() {
+		<-sig
+		fmt.Println("Shutting down...")
+		cancel()
+		wg.Wait()
+		os.Exit(0)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		registerService(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		browseServices(ctx, &clients)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		watchClipboard(ctx)
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		listenForTcp(ctx)
+	}()
+
+	select {}
 }
 
-func browseServices(clients *[]Client, mu *sync.Mutex) {
+func registerService(ctx context.Context) {
+	server, err := zeroconf.Register(ServiceName, "_workstation._tcp", "local.", PORT, []string{""}, nil)
+	if err != nil {
+		panic(err)
+	}
+
+	defer server.Shutdown()
+	defer log.Println("Shutting down.")
+
+	<-ctx.Done()
+}
+
+func browseServices(ctx context.Context, clients *[]Client) {
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
 		log.Fatalf("Failed to initialize resolver: %v", err)
@@ -74,28 +97,35 @@ func browseServices(clients *[]Client, mu *sync.Mutex) {
 
 	entries := make(chan *zeroconf.ServiceEntry)
 	go func(entries <-chan *zeroconf.ServiceEntry) {
-		for entry := range entries {
-			client := Client{
-				IP:   entry.AddrIPv4[0],
-				Port: entry.Port,
-				Name: entry.Service,
-			}
+		for {
+			select {
+			case entry := <-entries:
+				client := Client{
+					IP:   entry.AddrIPv4[0],
+					Port: entry.Port,
+					Name: entry.Service,
+				}
 
-			mu.Lock()
-			if !clientExists(clients, client) {
-				*clients = append(*clients, client)
+				if !clientExists(clients, client) {
+					*clients = append(*clients, client)
+				}
+			case <-ctx.Done():
+				return
 			}
-			mu.Unlock()
 		}
 	}(entries)
 
 	for {
-		err = resolver.Browse(context.TODO(), "_workstation._tcp", "local.", entries)
+		err = resolver.Browse(ctx, "_workstation._tcp", "local.", entries)
 		if err != nil {
 			log.Fatalf("Failed to browse: %v", err)
 		}
 		printClients(clients)
-		time.Sleep(time.Second * 10)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second * 10):
+		}
 	}
 }
 
@@ -115,8 +145,8 @@ func clientExists(clients *[]Client, client Client) bool {
 }
 
 func sendData(data []byte) {
-
 	fmt.Printf("Sending: %s", string(data))
+	ignoreNextChange = true
 
 	for i := range clients {
 		var client = &clients[i]
@@ -127,41 +157,25 @@ func sendData(data []byte) {
 			continue
 		}
 
-		resolvedAddr, err := net.ResolveTCPAddr("tcp4", serverAddr)
+		conn, err := net.Dial("tcp", serverAddr)
 		if err != nil {
-			fmt.Println("Error resolving address:", err)
-
-			continue
+			fmt.Println("Error connecting to server:", err)
+			os.Exit(1)
 		}
 
-		conn, err := net.DialTCP("tcp4", nil, resolvedAddr)
-		if err != nil {
-			fmt.Println("Error dialing:", err)
-			continue
-		}
+		defer conn.Close()
+
+		go func() {
+			ignoreNextChange = false
+		}()
+		time.Sleep(100 * time.Millisecond)
 
 		_, err = conn.Write(data)
-
 		if err != nil {
 			println("Write to server failed:", err.Error())
 			os.Exit(1)
 		}
-
-		println("write to server = ", string(data))
-
-		reply := make([]byte, 1024)
-
-		_, err = conn.Read(reply)
-		if err != nil {
-			println("Write to server failed:", err.Error())
-			os.Exit(1)
-		}
-
-		println("reply from server=", string(reply))
-
-		conn.Close()
 	}
-
 }
 
 func getLocalIP() (string, error) {
@@ -193,7 +207,7 @@ func getLocalIP() (string, error) {
 	return "", fmt.Errorf("no IP address found")
 }
 
-func listenForUdp() {
+func listenForUdp(ctx context.Context) {
 	err := beeep.Notify("Network clipboard", "Listening for events", "")
 	if err != nil {
 		log.Fatalf("Notification error: %v", err)
@@ -215,61 +229,89 @@ func listenForUdp() {
 	if err != nil {
 		log.Fatalf("Error creating UDP server: %v", err)
 	}
+	defer conn.Close()
 
 	buffer := make([]byte, BufferSize)
 	for {
-		n, clientAddr, err := conn.ReadFromUDP(buffer[0:])
-		if err != nil {
-			log.Printf("Error reading from UDP: %v", err)
-			continue
-		}
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			n, clientAddr, err := conn.ReadFromUDP(buffer[0:])
+			if err != nil {
+				log.Printf("Error reading from UDP: %v", err)
+				continue
+			}
 
-		conn.WriteToUDP([]byte("Hello UDP Client\n"), addr)
+			conn.WriteToUDP([]byte("Hello UDP Client\n"), addr)
 
-		receivedData := string(buffer[:n])
-		prefix := "Received from UDP: "
-		dataWithPrefix := prefix + receivedData
-		dataWithPrefixBytes := []byte(dataWithPrefix)
+			receivedData := string(buffer[:n])
+			prefix := "Received from UDP: "
+			dataWithPrefix := prefix + receivedData
+			dataWithPrefixBytes := []byte(dataWithPrefix)
 
-		fmt.Printf("\nReceived \"%s\" from %s\n", receivedData, clientAddr)
-		clipboard.Write(clipboard.FmtText, dataWithPrefixBytes)
-		if err != nil {
-			log.Printf("Error writing to clipboard: %v", err)
+			fmt.Printf("\nReceived \"%s\" from %s\n", receivedData, clientAddr)
+			clipboard.Write(clipboard.FmtText, dataWithPrefixBytes)
+			if err != nil {
+				log.Printf("Error writing to clipboard: %v", err)
+			}
 		}
 	}
 }
 
-func listenForTcp() {
-	addr := "localhost:12345"
-	l, err := net.Listen("tcp4", addr)
+func listenForTcp(ctx context.Context) {
+	addr := fmt.Sprintf(":%d", PORT)
+
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		panic(err)
 	}
-	defer l.Close()
+	defer listener.Close()
 
-	fmt.Printf("Listening on localhost:12345\n")
+	fmt.Printf("Listening on %s\n", addr)
 
 	for {
-		conn, err := l.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
 			panic(err)
 		}
 
-		go func(conn net.Conn) {
-			buf := make([]byte, 1024)
-			len, err := conn.Read(buf)
-			if err != nil {
-				fmt.Printf("Error reading: %#v\n", err)
-				return
-			}
-			fmt.Printf("Message received: %s\n", string(buf[:len]))
+		go handleConnection(conn)
 
-			conn.Write([]byte("Message received.\n"))
-			clipboard.Write(clipboard.FmtText, buf[:len])
-			if err != nil {
-				log.Printf("Error writing to clipboard: %v", err)
-			}
-			conn.Close()
-		}(conn)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+	}
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+	buffer := make([]byte, 1024)
+	// Read the incoming connection into the buffer
+	messageLength, err := conn.Read(buffer)
+	if err != nil {
+		fmt.Println("Error reading from connection:", err)
+		return
+	}
+	var message = buffer[:messageLength]
+	fmt.Println("\nReceived message:", string(message))
+	var currentData = clipboard.Read(clipboard.FmtText)
+	if bytes.Equal(message, currentData) == false {
+		clipboard.Write(clipboard.FmtText, []byte(fmt.Sprintf("Received from server: %s", string(message))))
+	}
+}
+
+func watchClipboard(ctx context.Context) {
+	ch := clipboard.Watch(ctx, clipboard.FmtText)
+
+	for {
+		select {
+		case data := <-ch:
+			sendData(data)
+		case <-ctx.Done():
+			return
+		}
 	}
 }
