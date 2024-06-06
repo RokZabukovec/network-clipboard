@@ -1,18 +1,19 @@
 package main
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"fmt"
+	"github.com/gen2brain/beeep"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
 
-	"github.com/gen2brain/beeep"
 	"github.com/grandcat/zeroconf"
 	"golang.design/x/clipboard"
 )
@@ -100,15 +101,22 @@ func browseServices(ctx context.Context, clients *[]Client) {
 		for {
 			select {
 			case entry := <-entries:
-				client := Client{
-					IP:   entry.AddrIPv4[0],
-					Port: entry.Port,
-					Name: entry.Service,
+				for index := range entry.AddrIPv4 {
+					if !isReachable(entry.AddrIPv4[index], PORT) {
+						continue
+					}
+					client := Client{
+						IP:   entry.AddrIPv4[index],
+						Port: entry.Port,
+						Name: entry.Service,
+					}
+
+					if !clientExists(clients, client) {
+						*clients = append(*clients, client)
+					}
+					break
 				}
 
-				if !clientExists(clients, client) {
-					*clients = append(*clients, client)
-				}
 			case <-ctx.Done():
 				return
 			}
@@ -127,6 +135,19 @@ func browseServices(ctx context.Context, clients *[]Client) {
 		case <-time.After(time.Second * 10):
 		}
 	}
+}
+
+func isReachable(ip net.IP, port int) bool {
+	if ip == nil {
+		return false
+	}
+	address := net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	_, err := net.DialTimeout("tcp", address, time.Second)
+	if err != nil {
+		return false
+	}
+
+	return true
 }
 
 func printClients(clients *[]Client) {
@@ -153,7 +174,8 @@ func sendData(data []byte) {
 		serverAddr := fmt.Sprintf("%s:%d", client.IP, client.Port)
 
 		var localIp, _ = getLocalIP()
-		if string(client.IP) == localIp {
+		if client.IP.String() == localIp {
+			fmt.Println("\nSkip yourself")
 			continue
 		}
 
@@ -207,58 +229,6 @@ func getLocalIP() (string, error) {
 	return "", fmt.Errorf("no IP address found")
 }
 
-func listenForUdp(ctx context.Context) {
-	err := beeep.Notify("Network clipboard", "Listening for events", "")
-	if err != nil {
-		log.Fatalf("Notification error: %v", err)
-	}
-
-	localIP, err := getLocalIP()
-	if err != nil {
-		log.Fatalf("Failed to get local IP: %v", err)
-	}
-	serverAddr := fmt.Sprintf("%s:%d", localIP, PORT)
-	fmt.Printf("Listening for data on %s\n", serverAddr)
-
-	addr, err := net.ResolveUDPAddr("udp", serverAddr)
-	if err != nil {
-		log.Fatalf("Error resolving address: %v", err)
-	}
-
-	conn, err := net.ListenUDP("udp", addr)
-	if err != nil {
-		log.Fatalf("Error creating UDP server: %v", err)
-	}
-	defer conn.Close()
-
-	buffer := make([]byte, BufferSize)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-			n, clientAddr, err := conn.ReadFromUDP(buffer[0:])
-			if err != nil {
-				log.Printf("Error reading from UDP: %v", err)
-				continue
-			}
-
-			conn.WriteToUDP([]byte("Hello UDP Client\n"), addr)
-
-			receivedData := string(buffer[:n])
-			prefix := "Received from UDP: "
-			dataWithPrefix := prefix + receivedData
-			dataWithPrefixBytes := []byte(dataWithPrefix)
-
-			fmt.Printf("\nReceived \"%s\" from %s\n", receivedData, clientAddr)
-			clipboard.Write(clipboard.FmtText, dataWithPrefixBytes)
-			if err != nil {
-				log.Printf("Error writing to clipboard: %v", err)
-			}
-		}
-	}
-}
-
 func listenForTcp(ctx context.Context) {
 	addr := fmt.Sprintf(":%d", PORT)
 
@@ -288,18 +258,24 @@ func listenForTcp(ctx context.Context) {
 
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
-	buffer := make([]byte, 1024)
+	//buffer := make([]byte, 1024)
 	// Read the incoming connection into the buffer
-	messageLength, err := conn.Read(buffer)
-	if err != nil {
-		fmt.Println("Error reading from connection:", err)
+	data, _ := bufio.NewReader(conn).ReadString('\n')
+
+	if data == "" {
 		return
 	}
-	var message = buffer[:messageLength]
-	fmt.Println("\nReceived message:", string(message))
+	fmt.Println("\nReceived message:", data)
 	var currentData = clipboard.Read(clipboard.FmtText)
-	if bytes.Equal(message, currentData) == false {
-		clipboard.Write(clipboard.FmtText, []byte(fmt.Sprintf("Received from server: %s", string(message))))
+	if data != string(currentData) {
+		clipboard.Write(clipboard.FmtText, []byte(data))
+		beeep.Notify("Network clipboard", data, "")
+	}
+	response := []byte("Message received")
+	_, err := conn.Write(response)
+	if err != nil {
+		fmt.Println("Error writing to connection:", err)
+		return
 	}
 }
 
