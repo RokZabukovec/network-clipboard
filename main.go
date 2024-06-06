@@ -1,10 +1,11 @@
 package main
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/gen2brain/beeep"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -260,16 +261,16 @@ func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	//buffer := make([]byte, 1024)
 	// Read the incoming connection into the buffer
-	data, _ := bufio.NewReader(conn).ReadString('\n')
+	data, _ := io.ReadAll(conn)
 
-	if data == "" {
+	if string(data) == "" {
 		return
 	}
-	fmt.Println("\nReceived message:", data)
+	fmt.Println("\nReceived message:", string(data))
 	var currentData = clipboard.Read(clipboard.FmtText)
-	if data != string(currentData) {
-		clipboard.Write(clipboard.FmtText, []byte(data))
-		beeep.Notify("Network clipboard", data, "")
+	if bytes.Equal(data, currentData) == false {
+		clipboard.Write(clipboard.FmtText, data)
+		beeep.Notify("Network clipboard", string(data), "")
 	}
 	response := []byte("Message received")
 	_, err := conn.Write(response)
