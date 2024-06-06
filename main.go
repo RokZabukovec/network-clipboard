@@ -160,7 +160,7 @@ func sendData(data []byte) {
 		conn, err := net.Dial("tcp", serverAddr)
 		if err != nil {
 			fmt.Println("Error connecting to server:", err)
-			os.Exit(1)
+			continue
 		}
 
 		defer conn.Close()
