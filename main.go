@@ -5,12 +5,14 @@ import (
 	"context"
 	"fmt"
 	"github.com/gen2brain/beeep"
+	"github.com/google/uuid"
 	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,6 +20,8 @@ import (
 	"github.com/grandcat/zeroconf"
 	"golang.design/x/clipboard"
 )
+
+var uniqueId = uuid.New().String()
 
 const PORT = 8888
 const ServiceName = "Network clipboard"
@@ -80,7 +84,11 @@ func main() {
 }
 
 func registerService(ctx context.Context) {
-	server, err := zeroconf.Register(ServiceName, "_workstation._tcp", "local.", PORT, []string{""}, nil)
+	txtRecords := []string{
+		"uuid=" + uniqueId,
+	}
+
+	server, err := zeroconf.Register(ServiceName, "_workstation._tcp", "local.", PORT, txtRecords, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -102,14 +110,19 @@ func browseServices(ctx context.Context, clients *[]Client) {
 		for {
 			select {
 			case entry := <-entries:
+				var isMe = isCurrentInstance(entry)
+				if isMe {
+					continue
+				}
 				for index := range entry.AddrIPv4 {
 					if !isReachable(entry.AddrIPv4[index], PORT) {
 						continue
 					}
+
 					client := Client{
 						IP:   entry.AddrIPv4[index],
 						Port: entry.Port,
-						Name: entry.Service,
+						Name: entry.HostName,
 					}
 
 					if !clientExists(clients, client) {
@@ -263,7 +276,7 @@ func handleConnection(conn net.Conn) {
 	// Read the incoming connection into the buffer
 	data, _ := io.ReadAll(conn)
 
-	if string(data) == "" {
+	if len(data) == 0 {
 		return
 	}
 	fmt.Println("\nReceived message:", string(data))
@@ -291,4 +304,20 @@ func watchClipboard(ctx context.Context) {
 			return
 		}
 	}
+}
+
+func isCurrentInstance(entry *zeroconf.ServiceEntry) bool {
+	var serviceTxtPrefix = "uuid="
+
+	for _, txt := range entry.Text {
+		var instanceId, found = strings.CutPrefix(txt, serviceTxtPrefix)
+
+		if !found {
+			continue
+		}
+
+		return instanceId == uniqueId
+	}
+
+	return false
 }
