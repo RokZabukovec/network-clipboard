@@ -38,6 +38,8 @@ type Client struct {
 var clients = make([]Client, 0)
 
 func main() {
+	interfaces, _ := net.Interfaces()
+	fmt.Println(interfaces)
 	err := clipboard.Init()
 	if err != nil {
 		panic(err)
@@ -88,7 +90,9 @@ func registerService(ctx context.Context) {
 		"uuid=" + uniqueId,
 	}
 
-	server, err := zeroconf.Register(ServiceName, "_workstation._tcp", "local.", PORT, txtRecords, nil)
+	wifiInterface, err := GetWifiInterface()
+
+	server, err := zeroconf.Register(ServiceName, "_workstation._tcp", "local.", PORT, txtRecords, []net.Interface{*wifiInterface})
 	if err != nil {
 		panic(err)
 	}
@@ -320,4 +324,19 @@ func isCurrentInstance(entry *zeroconf.ServiceEntry) bool {
 	}
 
 	return false
+}
+
+// GetWifiInterface returns the network interface named "WiFi"
+func GetWifiInterface() (*net.Interface, error) {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil, err
+	}
+
+	for _, iface := range interfaces {
+		if iface.Name == "WiFi" {
+			return &iface, nil
+		}
+	}
+	return nil, fmt.Errorf("Wi-Fi interface not found")
 }
