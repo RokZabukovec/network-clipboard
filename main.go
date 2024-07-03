@@ -11,7 +11,6 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -38,8 +37,6 @@ type Client struct {
 var clients = make([]Client, 0)
 
 func main() {
-	interfaces, _ := net.Interfaces()
-	fmt.Println(interfaces)
 	err := clipboard.Init()
 	if err != nil {
 		panic(err)
@@ -85,14 +82,27 @@ func main() {
 	select {}
 }
 
+func getOutboundIP() net.IP {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+
+	return localAddr.IP
+}
+
 func registerService(ctx context.Context) {
+	ip := getOutboundIP()
+
 	txtRecords := []string{
 		"uuid=" + uniqueId,
+		"ip=" + ip.String(),
 	}
 
-	wifiInterface, err := GetWifiInterface()
-
-	server, err := zeroconf.Register(ServiceName, "_workstation._tcp", "local.", PORT, txtRecords, []net.Interface{*wifiInterface})
+	server, err := zeroconf.Register(ServiceName, "_workstation._tcp", "local.", PORT, txtRecords, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -114,25 +124,16 @@ func browseServices(ctx context.Context, clients *[]Client) {
 		for {
 			select {
 			case entry := <-entries:
-				var isMe = isCurrentInstance(entry)
-				if isMe {
-					continue
+				ip := net.ParseIP(getServiceIp(entry))
+
+				client := Client{
+					IP:   ip,
+					Port: entry.Port,
+					Name: entry.HostName,
 				}
-				for index := range entry.AddrIPv4 {
-					if !isReachable(entry.AddrIPv4[index], PORT) {
-						continue
-					}
 
-					client := Client{
-						IP:   entry.AddrIPv4[index],
-						Port: entry.Port,
-						Name: entry.HostName,
-					}
-
-					if !clientExists(clients, client) {
-						*clients = append(*clients, client)
-					}
-					break
+				if !clientExists(clients, client) {
+					*clients = append(*clients, client)
 				}
 
 			case <-ctx.Done():
@@ -153,19 +154,6 @@ func browseServices(ctx context.Context, clients *[]Client) {
 		case <-time.After(time.Second * 10):
 		}
 	}
-}
-
-func isReachable(ip net.IP, port int) bool {
-	if ip == nil {
-		return false
-	}
-	address := net.JoinHostPort(ip.String(), strconv.Itoa(port))
-	_, err := net.DialTimeout("tcp", address, time.Second)
-	if err != nil {
-		return false
-	}
-
-	return true
 }
 
 func printClients(clients *[]Client) {
@@ -191,12 +179,6 @@ func sendData(data []byte) {
 		var client = &clients[i]
 		serverAddr := fmt.Sprintf("%s:%d", client.IP, client.Port)
 
-		var localIp, _ = getLocalIP()
-		if client.IP.String() == localIp {
-			fmt.Println("\nSkip yourself")
-			continue
-		}
-
 		conn, err := net.Dial("tcp", serverAddr)
 		if err != nil {
 			fmt.Println("Error connecting to server:", err)
@@ -216,35 +198,6 @@ func sendData(data []byte) {
 			os.Exit(1)
 		}
 	}
-}
-
-func getLocalIP() (string, error) {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return "", err
-	}
-
-	for _, i := range interfaces {
-		addrs, err := i.Addrs()
-		if err != nil {
-			return "", err
-		}
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			if ip.IsLoopback() || ip.To4() == nil {
-				continue
-			}
-			return ip.String(), nil
-		}
-	}
-	return "", fmt.Errorf("no IP address found")
 }
 
 func listenForTcp(ctx context.Context) {
@@ -285,6 +238,8 @@ func handleConnection(conn net.Conn) {
 	}
 	fmt.Println("\nReceived message:", string(data))
 	var currentData = clipboard.Read(clipboard.FmtText)
+	beeep.Notify("Message received", string(data), "")
+
 	if bytes.Equal(data, currentData) == false {
 		clipboard.Write(clipboard.FmtText, data)
 		beeep.Notify("Network clipboard", string(data), "")
@@ -326,17 +281,18 @@ func isCurrentInstance(entry *zeroconf.ServiceEntry) bool {
 	return false
 }
 
-// GetWifiInterface returns the network interface named "WiFi"
-func GetWifiInterface() (*net.Interface, error) {
-	interfaces, err := net.Interfaces()
-	if err != nil {
-		return nil, err
+func getServiceIp(entry *zeroconf.ServiceEntry) string {
+	var ipTxtPrefix = "ip="
+
+	for _, txt := range entry.Text {
+		var ip, found = strings.CutPrefix(txt, ipTxtPrefix)
+
+		if !found {
+			continue
+		}
+
+		return ip
 	}
 
-	for _, iface := range interfaces {
-		if iface.Name == "WiFi" {
-			return &iface, nil
-		}
-	}
-	return nil, fmt.Errorf("Wi-Fi interface not found")
+	return ""
 }
