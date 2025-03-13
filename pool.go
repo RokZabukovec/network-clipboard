@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/charmbracelet/log"
 	"github.com/grandcat/zeroconf"
 	"time"
@@ -12,15 +11,7 @@ type Client struct {
 	ip string
 }
 
-type ClientPool struct {
-	clients []*Client
-}
-
-func NewClientPool() *ClientPool {
-	return &ClientPool{clients: make([]*Client, 0)}
-}
-
-func (cp *ClientPool) Browse() {
+func (s *Server) Browse() {
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
 		log.Fatalf("Failed to initialize resolver: %v", err)
@@ -37,8 +28,8 @@ func (cp *ClientPool) Browse() {
 					ip: entry.AddrIPv4[0].String(),
 				}
 
-				if cp.containsClient(&client) == false {
-					cp.AddClient(&client)
+				if s.containsClient(&client) == false {
+					s.AddPeer(&client)
 				}
 			}
 		}
@@ -54,22 +45,4 @@ func (cp *ClientPool) Browse() {
 		case <-time.After(time.Second * 10):
 		}
 	}
-}
-
-func (cp *ClientPool) AddClient(client *Client) {
-	if !cp.containsClient(client) {
-		cp.clients = append(cp.clients, client)
-		fmt.Println("Client added:", client.ip)
-	} else {
-		fmt.Println("Client already exists:", client.ip)
-	}
-}
-
-func (cp *ClientPool) containsClient(newClient *Client) bool {
-	for _, client := range cp.clients {
-		if client.ip == newClient.ip {
-			return true
-		}
-	}
-	return false
 }
