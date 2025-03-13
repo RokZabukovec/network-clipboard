@@ -10,20 +10,23 @@ import (
 	"github.com/google/uuid"
 	"github.com/grandcat/zeroconf"
 	"golang.design/x/clipboard"
+	"io"
 	"net"
-	"os"
 )
 
 type ConnectionHandler func(net.Conn)
 
 type Server struct {
-	UUID     uuid.UUID
-	Addr     string
-	Name     string
-	Port     int
-	Messages chan []byte
-	Peers    []*Client
-	Ip       net.IP
+	UUID         uuid.UUID
+	Addr         string
+	Name         string
+	Port         int
+	CopiedData   chan []byte
+	ReceivedData chan []byte
+	Peers        []*Client
+	Ip           net.IP
+	Ln           net.Listener
+	Quit         chan struct{}
 }
 
 func NewServer(name string, port int) *Server {
@@ -32,13 +35,14 @@ func NewServer(name string, port int) *Server {
 	log.Info("Server is listening", "addr", addr)
 
 	return &Server{
-		UUID:     uuid.New(),
-		Addr:     addr,
-		Name:     name,
-		Port:     port,
-		Messages: make(chan []byte),
-		Peers:    make([]*Client, 0),
-		Ip:       ip,
+		UUID:       uuid.New(),
+		Addr:       addr,
+		Name:       name,
+		Port:       port,
+		CopiedData: make(chan []byte),
+		Peers:      make([]*Client, 0),
+		Ip:         ip,
+		Quit:       make(chan struct{}),
 	}
 }
 
@@ -54,55 +58,58 @@ func (s *Server) Init() {
 	go s.BroadcastMessages()
 }
 
-func (s *Server) InitAndListen(handler ConnectionHandler) {
+func (s *Server) Start() {
 	s.Init()
-	// Start a TCP server listening on port 8080
-	listener, err := net.Listen("tcp", ":8080")
+	listener, err := net.Listen("tcp", s.Addr)
 	if err != nil {
-		fmt.Println("Error starting server:", err)
-		os.Exit(1)
+		panic("Error starting server")
 	}
 	defer listener.Close()
+	s.Ln = listener
+	fmt.Printf("Server is listening on port :%d\n", s.Port)
 
-	fmt.Println("Server is listening on port 8080...")
+	go s.acceptLoop()
 
+	<-s.Quit
+}
+
+func (s *Server) acceptLoop() {
 	for {
-		// Accept an incoming connection
-		conn, err := listener.Accept()
+		connection, err := s.Ln.Accept()
+
 		if err != nil {
-			fmt.Println("Error accepting connection:", err)
+			fmt.Println("Error accepting connection")
 			continue
 		}
 
-		fmt.Println("New client connected:", conn.RemoteAddr())
+		fmt.Println("Connection accepted from: ", connection.RemoteAddr())
 
-		// Handle the client in a separate goroutine
-		go handleConnection(conn)
+		go s.readLoop(connection)
 	}
 }
 
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
+func (s *Server) readLoop(conn net.Conn) {
+	defer func() {
+		fmt.Println("Connection closed by remote:", conn.RemoteAddr())
+		conn.Close()
+	}()
 
-	// Create a buffered reader to read client messages
 	reader := bufio.NewReader(conn)
 
 	for {
-		// Read the message from the client
-		message, err := reader.ReadString('\n')
+		line, err := reader.ReadString('\n')
 		if err != nil {
-			fmt.Println("Client disconnected:", conn.RemoteAddr())
-			return
+			if err == io.EOF {
+				fmt.Println("Client disconnected:", conn.RemoteAddr())
+				break
+			}
+			fmt.Println("Error reading from connection:", err)
+			break
 		}
 
-		fmt.Printf("Received: %s", message)
+		_, _ = conn.Write([]byte("You typed: " + line))
 
-		// Send a response back to the client
-		_, err = conn.Write([]byte("Message received: " + message))
-		if err != nil {
-			fmt.Println("Error sending response:", err)
-			return
-		}
+		clipboardHandle([]byte(line))
 	}
 }
 
@@ -123,34 +130,6 @@ func (s *Server) Register() {
 	log.Info("Service started broadcasting")
 
 	select {}
-}
-
-func ConnHandler(conn net.Conn) {
-	defer conn.Close()
-	buffer := make([]byte, 2048)
-	for {
-		n, err := conn.Read(buffer)
-		if err != nil {
-			if err.Error() == "EOF" {
-				log.Error("Client disconnected")
-			} else {
-				log.Error("Error reading data", "error", err)
-			}
-			return
-		}
-
-		message := string(buffer[:n])
-		clipboardHandle(buffer[:n])
-		log.Print("Message received: ", "message", message)
-
-		_, err = conn.Write([]byte("Thank you"))
-
-		if err != nil {
-			log.Error("Error sending data:", err)
-
-			return
-		}
-	}
 }
 
 func clipboardHandle(data []byte) {
@@ -199,12 +178,12 @@ func (s *Server) containsClient(newClient *Client) bool {
 func (s *Server) WatchClipboard() {
 	ch := clipboard.Watch(context.Background(), clipboard.FmtText)
 	for data := range ch {
-		s.Messages <- data
+		s.CopiedData <- data
 	}
 }
 
 func (s *Server) BroadcastMessages() {
-	for message := range s.Messages {
+	for message := range s.CopiedData {
 		fmt.Print(string(message))
 	}
 }
