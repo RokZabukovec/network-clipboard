@@ -4,6 +4,7 @@ import (
 	"context"
 	"github.com/charmbracelet/log"
 	"github.com/grandcat/zeroconf"
+	"strings"
 	"time"
 )
 
@@ -25,10 +26,10 @@ func (s *Server) Browse() {
 			case entry := <-entries:
 
 				client := Client{
-					ip: entry.AddrIPv4[0].String(),
+					ip: findIPString(entry.Text),
 				}
 
-				if s.containsClient(&client) == false {
+				if len(client.ip) > 0 && s.containsClient(&client) == false {
 					s.AddPeer(&client)
 				}
 			}
@@ -45,4 +46,13 @@ func (s *Server) Browse() {
 		case <-time.After(time.Second * 10):
 		}
 	}
+}
+
+func findIPString(stringsList []string) string {
+	for _, str := range stringsList {
+		if strings.HasPrefix(str, "ip=") {
+			return strings.TrimPrefix(str, "ip=") // Remove "ip=" and return the rest
+		}
+	}
+	return "" // Return empty string if no match found
 }

@@ -1,0 +1,51 @@
+# 🔹 Ignore Go binary files
+*.exe
+*.out
+*.test
+*.so
+
+# 🔹 Ignore Go build cache and temporary files
+/go/pkg/
+/go/bin/
+/go/src/
+/tmp/
+*.log
+
+# 🔹 Ignore vendor dependencies (if using `go mod vendor`)
+/vendor/
+
+# 🔹 Ignore Go module files (if using Go 1.11+ modules)
+go.sum
+
+# 🔹 Ignore IDE and Editor-specific files
+.vscode/
+.idea/
+*.iml
+
+# 🔹 Ignore OS-generated files
+.DS_Store
+Thumbs.db
+
+# 🔹 Ignore debugging files
+*.swp
+*.swo
+*.bak
+
+# 🔹 Ignore Git hooks and precompiled scripts
+.git/hooks/*.sample
+
+# 🔹 Ignore coverage reports
+*.cover
+*.cov
+cover.out
+
+# 🔹 Ignore race detector output
+*.race
+
+# 🔹 Ignore GoLand workspace and settings
+.goland/
+
+# 🔹 Ignore Docker-related files
+docker-compose.override.yml
+.env
+.envrc

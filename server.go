@@ -14,8 +14,6 @@ import (
 	"net"
 )
 
-type ConnectionHandler func(net.Conn)
-
 type Server struct {
 	UUID         uuid.UUID
 	Addr         string
@@ -30,7 +28,6 @@ type Server struct {
 }
 
 func NewServer(name string, port int) *Server {
-	ip := GetIp()
 	addr := fmt.Sprintf(":%d", port)
 	log.Info("Server is listening", "addr", addr)
 
@@ -41,7 +38,7 @@ func NewServer(name string, port int) *Server {
 		Port:       port,
 		CopiedData: make(chan []byte),
 		Peers:      make([]*Client, 0),
-		Ip:         ip,
+		Ip:         GetIp(),
 		Quit:       make(chan struct{}),
 	}
 }
@@ -64,7 +61,12 @@ func (s *Server) Start() {
 	if err != nil {
 		panic("Error starting server")
 	}
-	defer listener.Close()
+	defer func(listener net.Listener) {
+		err := listener.Close()
+		if err != nil {
+			fmt.Printf("Server did not close the listener")
+		}
+	}(listener)
 	s.Ln = listener
 	fmt.Printf("Server is listening on port :%d\n", s.Port)
 
@@ -91,7 +93,10 @@ func (s *Server) acceptLoop() {
 func (s *Server) readLoop(conn net.Conn) {
 	defer func() {
 		fmt.Println("Connection closed by remote:", conn.RemoteAddr())
-		conn.Close()
+		err := conn.Close()
+		if err != nil {
+			return
+		}
 	}()
 
 	reader := bufio.NewReader(conn)
@@ -158,6 +163,9 @@ func GetIp() net.IP {
 }
 
 func (s *Server) AddPeer(peer *Client) {
+	if peer.ip == s.Ip.String() {
+		return
+	}
 	if !s.containsClient(peer) {
 		s.Peers = append(s.Peers, peer)
 		fmt.Println("Client added:", peer.ip)
@@ -184,6 +192,6 @@ func (s *Server) WatchClipboard() {
 
 func (s *Server) BroadcastMessages() {
 	for message := range s.CopiedData {
-		fmt.Print(string(message))
+		fmt.Print("Should send: ", string(message))
 	}
 }
