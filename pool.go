@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"github.com/charmbracelet/log"
 	"github.com/grandcat/zeroconf"
+	"strings"
 	"time"
 )
 
@@ -12,15 +12,7 @@ type Client struct {
 	ip string
 }
 
-type ClientPool struct {
-	clients []*Client
-}
-
-func NewClientPool() *ClientPool {
-	return &ClientPool{clients: make([]*Client, 0)}
-}
-
-func (cp *ClientPool) Browse() {
+func (s *Server) Browse() {
 	resolver, err := zeroconf.NewResolver(nil)
 	if err != nil {
 		log.Fatalf("Failed to initialize resolver: %v", err)
@@ -34,11 +26,11 @@ func (cp *ClientPool) Browse() {
 			case entry := <-entries:
 
 				client := Client{
-					ip: entry.AddrIPv4[0].String(),
+					ip: findIPString(entry.Text),
 				}
 
-				if cp.containsClient(&client) == false {
-					cp.AddClient(&client)
+				if len(client.ip) > 0 && s.containsClient(&client) == false {
+					s.AddPeer(&client)
 				}
 			}
 		}
@@ -56,20 +48,11 @@ func (cp *ClientPool) Browse() {
 	}
 }
 
-func (cp *ClientPool) AddClient(client *Client) {
-	if !cp.containsClient(client) {
-		cp.clients = append(cp.clients, client)
-		fmt.Println("Client added:", client.ip)
-	} else {
-		fmt.Println("Client already exists:", client.ip)
-	}
-}
-
-func (cp *ClientPool) containsClient(newClient *Client) bool {
-	for _, client := range cp.clients {
-		if client.ip == newClient.ip {
-			return true
+func findIPString(stringsList []string) string {
+	for _, str := range stringsList {
+		if strings.HasPrefix(str, "ip=") {
+			return strings.TrimPrefix(str, "ip=") // Remove "ip=" and return the rest
 		}
 	}
-	return false
+	return "" // Return empty string if no match found
 }

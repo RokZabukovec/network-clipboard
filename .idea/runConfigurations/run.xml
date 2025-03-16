@@ -2,7 +2,7 @@
   <configuration default="false" name="run" type="GoApplicationRunConfiguration" factoryName="Go Application">
     <module name="network-clipboard" />
     <working_directory value="$PROJECT_DIR$" />
-    <kind value="PACKAGE" />
+    <kind value="DIRECTORY" />
     <package value="network-clipboard" />
     <directory value="$PROJECT_DIR$" />
     <filePath value="$PROJECT_DIR$/main.go" />
