@@ -12,6 +12,7 @@ import (
 	"golang.design/x/clipboard"
 	"io"
 	"net"
+	"sync"
 )
 
 type Server struct {
@@ -21,7 +22,8 @@ type Server struct {
 	Port         int
 	CopiedData   chan []byte
 	ReceivedData chan []byte
-	Peers        []*Client
+	mu           sync.Mutex
+	Peers        map[string]*Client
 	Ip           net.IP
 	Ln           net.Listener
 	Quit         chan struct{}
@@ -37,7 +39,7 @@ func NewServer(name string, port int) *Server {
 		Name:       name,
 		Port:       port,
 		CopiedData: make(chan []byte),
-		Peers:      make([]*Client, 0),
+		Peers:      make(map[string]*Client),
 		Ip:         GetIp(),
 		Quit:       make(chan struct{}),
 	}
@@ -166,8 +168,12 @@ func (s *Server) AddPeer(peer *Client) {
 	if peer.ip == s.Ip.String() {
 		return
 	}
-	if !s.containsClient(peer) {
-		s.Peers = append(s.Peers, peer)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, exists := s.Peers[peer.ip]; !exists {
+		s.Peers[peer.ip] = peer
 		fmt.Println("Client added:", peer.ip)
 	} else {
 		fmt.Println("Client already exists:", peer.ip)
